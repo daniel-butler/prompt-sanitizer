@@ -6,9 +6,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	
+
 	"github.com/openclaw/prompt-sanitizer/pkg/wrapper"
 )
+
+// Version is set at build time via ldflags
+var Version = "dev"
 
 func main() {
 	if err := run(os.Args, os.Stdin, os.Stdout, os.Stderr); err != nil {
@@ -20,17 +23,23 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	
+
 	source := fs.String("source", "Unknown", "Source label for the content")
 	filePath := fs.String("file", "", "File to wrap (if not reading from stdin)")
-	
+	showVersion := fs.Bool("version", false, "Print version and exit")
+
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	
+
+	if *showVersion {
+		fmt.Fprintln(stdout, Version)
+		return nil
+	}
+
 	var content string
 	var err error
-	
+
 	// Check if we have remaining args (command execution mode)
 	remainingArgs := fs.Args()
 	if len(remainingArgs) > 0 {
@@ -52,7 +61,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			return fmt.Errorf("reading stdin: %w", err)
 		}
 	}
-	
+
 	// Wrap and output
 	wrapped := wrapper.WrapContent(content, *source)
 	fmt.Fprintln(stdout, wrapped)

@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out ./...
+      
+      - name: Run benchmarks
+        run: go test -bench=. -benchmem ./...
+      
+      - name: Run fuzz tests (brief)
+        run: go test -fuzz=Fuzz -fuzztime=30s ./pkg/wrapper/
+
+  release:
+    name: Release
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for tag counting
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      
+      - name: Calculate version
+        id: version
+        run: |
+          # Get today's date in YYYY.MM.DD format
+          DATE=$(date -u +%Y.%m.%d)
+          
+          # Count releases today (tags starting with today's date)
+          COUNT=$(git tag -l "${DATE}-*" 2>/dev/null | wc -l)
+          NEXT_COUNT=$((COUNT + 1))
+          
+          # Version format: YYYY.MM.DD-N
+          VERSION="${DATE}-${NEXT_COUNT}"
+          
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Calculated version: ${VERSION}"
+      
+      - name: Build binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          
+          # Build for multiple platforms
+          PLATFORMS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64"
+          
+          for platform in $PLATFORMS; do
+            GOOS="${platform%/*}"
+            GOARCH="${platform#*/}"
+            output_name="prompt-sanitizer-${GOOS}-${GOARCH}"
+            
+            if [ "$GOOS" = "windows" ]; then
+              output_name="${output_name}.exe"
+            fi
+            
+            echo "Building for $GOOS/$GOARCH..."
+            GOOS=$GOOS GOARCH=$GOARCH go build \
+              -ldflags="-s -w -X main.Version=${VERSION}" \
+              -o "dist/${output_name}" \
+              ./cmd/prompt-sanitizer
+          done
+          
+          # Create checksums
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+      
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Create tag
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+          
+          # Create GitHub release with binaries
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes "Automated release v${VERSION}
+
+## Downloads
+Download the binary for your platform below.
+
+## Verify checksums
+\`\`\`
+$(cat dist/checksums.txt)
+\`\`\`" \
+            dist/*
